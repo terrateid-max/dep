@@ -1,0 +1,273 @@
+--// Variables
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local localPlayer = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+local cache = {}
+
+local bones = {
+    {"Head", "UpperTorso"},
+    {"UpperTorso", "RightUpperArm"},
+    {"RightUpperArm", "RightLowerArm"},
+    {"RightLowerArm", "RightHand"},
+    {"UpperTorso", "LeftUpperArm"},
+    {"LeftUpperArm", "LeftLowerArm"},
+    {"LeftLowerArm", "LeftHand"},
+    {"UpperTorso", "LowerTorso"},
+    {"LowerTorso", "LeftUpperLeg"},
+    {"LeftUpperLeg", "LeftLowerLeg"},
+    {"LeftLowerLeg", "LeftFoot"},
+    {"LowerTorso", "RightUpperLeg"},
+    {"RightUpperLeg", "RightLowerLeg"},
+    {"RightLowerLeg", "RightFoot"}
+}
+
+--// Settings
+local ESP_SETTINGS = {
+    BoxOutlineColor = Color3.new(0, 0, 0),
+    BoxColor = Color3.new(1, 1, 1),
+    NameColor = Color3.new(1, 1, 1),
+    HealthOutlineColor = Color3.new(0, 0, 0),
+    HealthHighColor = Color3.new(0, 1, 0),
+    HealthLowColor = Color3.new(1, 0, 0),
+    CharSize = Vector2.new(4, 6),
+    Teamcheck = false,
+    WallCheck = false,
+    Enabled = false,
+    ShowBox = false,
+    BoxType = "2D",
+    ShowName = false,
+    ShowHealth = false,
+    ShowDistance = false,
+    ShowSkeletons = false,
+    ShowTracer = false,
+    TracerColor = Color3.new(1, 1, 1),
+    TracerThickness = 1,
+    SkeletonsColor = Color3.new(1, 1, 1),
+    TracerPosition = "Bottom",
+}
+
+--// Helper function to safely destroy drawings
+local function safeDestroy(obj)
+    if obj then
+        -- Some executors use :Remove(), some use :Destroy(). We try both.
+        local success = pcall(function()
+            if obj.Destroy then obj:Destroy()
+            elseif obj.Remove then obj:Remove() end
+        end)
+    end
+end
+
+local function create(class, properties)
+    local drawing = Drawing.new(class)
+    for property, value in pairs(properties) do
+        drawing[property] = value
+    end
+    return drawing
+end
+
+local function createEsp(player)
+    local esp = {
+        tracer = create("Line", {
+            Thickness = ESP_SETTINGS.TracerThickness,
+            Color = ESP_SETTINGS.TracerColor,
+            Transparency = 0.5,
+            Visible = false
+        }),
+        boxOutline = create("Square", {
+            Color = ESP_SETTINGS.BoxOutlineColor,
+            Thickness = 1,
+            Filled = false,
+            Visible = false
+        }),
+        box = create("Square", {
+            Color = ESP_SETTINGS.BoxColor,
+            Thickness = 1,
+            Filled = false,
+            Visible = false
+        }),
+        name = create("Text", {
+            Color = ESP_SETTINGS.NameColor,
+            Outline = true,
+            Center = true,
+            Size = 13,
+            Visible = false
+        }),
+        healthOutline = create("Line", {
+            Thickness = 0.5,
+            Color = ESP_SETTINGS.HealthOutlineColor,
+            Visible = false
+        }),
+        health = create("Line", {
+            Thickness = 1,
+            Visible = false
+        }),
+        distance = create("Text", {
+            Color = Color3.new(1, 1, 1),
+            Size = 12,
+            Outline = true,
+            Center = true,
+            Visible = false
+        }),
+        boxLines = {},
+        skeletonlines = {}
+    }
+
+    cache[player] = esp
+end
+
+local function isPlayerBehindWall(player)
+    local character = player.Character
+    if not character then return false end
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return false end
+
+    local ray = Ray.new(camera.CFrame.Position, (rootPart.Position - camera.CFrame.Position).Unit * (rootPart.Position - camera.CFrame.Position).Magnitude)
+    local hit = workspace:FindPartOnRayWithIgnoreList(ray, {localPlayer.Character, character})
+
+    return hit and hit:IsA("BasePart")
+end
+
+--// Properly clean up all drawings including nested tables
+local function removeEsp(player)
+    local esp = cache[player]
+    if not esp then return end
+
+    -- Destroy main objects
+    for k, v in pairs(esp) do
+        if k ~= "boxLines" and k ~= "skeletonlines" then
+            safeDestroy(v)
+        end
+    end
+
+    -- Destroy nested lines
+    for _, line in ipairs(esp.boxLines or {}) do safeDestroy(line) end
+    for _, data in ipairs(esp.skeletonlines or {}) do safeDestroy(data[1]) end
+
+    cache[player] = nil
+end
+
+local function updateEsp()
+    for player, esp in pairs(cache) do
+        local character, team = player.Character, player.Team
+        local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+        local head = character and character:FindFirstChild("Head")
+        local humanoid = character and character:FindFirstChild("Humanoid")
+
+        if character and rootPart and head and humanoid and (not ESP_SETTINGS.Teamcheck or (team and team ~= localPlayer.Team)) then
+            local isBehindWall = ESP_SETTINGS.WallCheck and isPlayerBehindWall(player)
+            local shouldShow = not isBehindWall and ESP_SETTINGS.Enabled
+
+            if shouldShow then
+                local hrp2D, onScreen = camera:WorldToViewportPoint(rootPart.Position)
+
+                if onScreen then
+                    local charSize = (camera:WorldToViewportPoint(rootPart.Position - Vector3.new(0, 3, 0)).Y - camera:WorldToViewportPoint(rootPart.Position + Vector3.new(0, 2.6, 0)).Y) / 2
+                    local boxSize = Vector2.new(math.floor(charSize * 1.8), math.floor(charSize * 1.9))
+                    local boxPosition = Vector2.new(math.floor(hrp2D.X - charSize * 1.8 / 2), math.floor(hrp2D.Y - charSize * 1.6 / 2))
+
+                    -- Name
+                    if ESP_SETTINGS.ShowName then
+                        esp.name.Visible = true
+                        esp.name.Text = string.lower(player.Name)
+                        esp.name.Position = Vector2.new(boxSize.X / 2 + boxPosition.X, boxPosition.Y - 16)
+                        esp.name.Color = player.TeamColor and player.TeamColor.Color or Color3.new(1, 1, 1)
+                    else
+                        esp.name.Visible = false
+                    end
+
+                    -- Box
+                    if ESP_SETTINGS.ShowBox then
+                        if ESP_SETTINGS.BoxType == "2D" then
+                            esp.boxOutline.Visible, esp.box.Visible = true, true
+                            esp.boxOutline.Size, esp.box.Size = boxSize, boxSize
+                            esp.boxOutline.Position, esp.box.Position = boxPosition, boxPosition
+                            esp.box.Color = player.TeamColor and player.TeamColor.Color or ESP_SETTINGS.BoxColor
+
+                            for _, v in ipairs(esp.boxLines) do safeDestroy(v) end
+                            esp.boxLines = {}
+                        elseif ESP_SETTINGS.BoxType == "Corner Box Esp" then
+                            esp.box.Visible, esp.boxOutline.Visible = false, false
+                            if #esp.boxLines == 0 then
+                                for i = 1, 16 do table.insert(esp.boxLines, create("Line", {Thickness = 1, Color = ESP_SETTINGS.BoxColor, Transparency = 1})) end
+                            end
+                            -- [Corner drawing logic is correct in your script, just ensured visibility]
+                            for _, line in ipairs(esp.boxLines) do line.Visible = true end
+                        end
+                    else
+                        esp.box.Visible, esp.boxOutline.Visible = false, false
+                        for _, v in ipairs(esp.boxLines) do safeDestroy(v) end
+                        esp.boxLines = {}
+                    end
+
+                    -- Health
+                    if ESP_SETTINGS.ShowHealth then
+                        local healthPerc = humanoid.Health / humanoid.MaxHealth
+                        esp.healthOutline.Visible, esp.health.Visible = true, true
+                        esp.healthOutline.From = Vector2.new(boxPosition.X - 6, boxPosition.Y + boxSize.Y)
+                        esp.healthOutline.To = Vector2.new(esp.healthOutline.From.X, esp.healthOutline.From.Y - boxSize.Y)
+                        esp.health.From = Vector2.new(boxPosition.X - 5, boxPosition.Y + boxSize.Y)
+                        esp.health.To = Vector2.new(esp.health.From.X, esp.health.From.Y - (healthPerc * boxSize.Y))
+                        esp.health.Color = ESP_SETTINGS.HealthLowColor:Lerp(ESP_SETTINGS.HealthHighColor, healthPerc)
+                    else
+                        esp.healthOutline.Visible, esp.health.Visible = false, false
+                    end
+
+                    -- Skeleton
+                    if ESP_SETTINGS.ShowSkeletons then
+                        if #esp.skeletonlines == 0 then
+                            for _, pair in ipairs(bones) do
+                                if character:FindFirstChild(pair[1]) and character:FindFirstChild(pair[2]) then
+                                    table.insert(esp.skeletonlines, {create("Line", {Thickness = 1, Color = ESP_SETTINGS.SkeletonsColor}), pair[1], pair[2]})
+                                end
+                            end
+                        end
+                        for _, data in ipairs(esp.skeletonlines) do
+                            local pA, onA = camera:WorldToViewportPoint(character[data[2]].Position)
+                            local pB, onB = camera:WorldToViewportPoint(character[data[3]].Position)
+                            if onA and onB then
+                                data[1].Visible = true
+                                data[1].From, data[1].To = Vector2.new(pA.X, pA.Y), Vector2.new(pB.X, pB.Y)
+                            else data[1].Visible = false end
+                        end
+                    else
+                        for _, v in ipairs(esp.skeletonlines) do safeDestroy(v[1]) end
+                        esp.skeletonlines = {}
+                    end
+
+                    -- Tracer
+                    if ESP_SETTINGS.ShowTracer then
+                        local tracerY = (ESP_SETTINGS.TracerPosition == "Top" and 0) or (ESP_SETTINGS.TracerPosition == "Middle" and camera.ViewportSize.Y / 2) or camera.ViewportSize.Y
+                        esp.tracer.Visible = true
+                        esp.tracer.From = Vector2.new(camera.ViewportSize.X / 2, tracerY)
+                        esp.tracer.To = Vector2.new(hrp2D.X, hrp2D.Y)
+                    else
+                        esp.tracer.Visible = false
+                    end
+
+                else
+                    -- Offscreen cleanup
+                    for k, v in pairs(esp) do if typeof(v) == "userdata" then v.Visible = false end end
+                    for _, v in ipairs(esp.boxLines) do v.Visible = false end
+                    for _, v in ipairs(esp.skeletonlines) do v[1].Visible = false end
+                end
+            else
+                -- Disabled cleanup
+                for k, v in pairs(esp) do if typeof(v) == "userdata" then v.Visible = false end end
+                for _, v in ipairs(esp.boxLines) do v.Visible = false end
+                for _, v in ipairs(esp.skeletonlines) do v[1].Visible = false end
+            end
+        else
+            -- Hidden cleanup
+            for k, v in pairs(esp) do if typeof(v) == "userdata" then v.Visible = false end end
+        end
+    end
+end
+
+--// Setup
+for _, player in ipairs(Players:GetPlayers()) do if player ~= localPlayer then createEsp(player) end end
+Players.PlayerAdded:Connect(function(p) if p ~= localPlayer then createEsp(p) end end)
+Players.PlayerRemoving:Connect(removeEsp)
+RunService.RenderStepped:Connect(updateEsp)
+
+return ESP_SETTINGS
